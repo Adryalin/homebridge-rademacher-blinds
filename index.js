@@ -1,246 +1,513 @@
-const axios = require('axios').default;
-let Accessory, Service, Characteristic, UUIDGen;
+var Accessory, Service, Characteristic, UUIDGen;
 
-module.exports = (homebridge) => {
-    Accessory = homebridge.platformAccessory;
-    Service = homebridge.hap.Service;
-    Characteristic = homebridge.hap.Characteristic;
+var RademacherHomePilotSession = require('./accessories/RademacherHomePilotSession.js');
+var RademacherBlindsAccessory = require('./accessories/RademacherBlindsAccessory.js');
+var RademacherLockAccessory = require('./accessories/RademacherLockAccessory.js');
+var RademacherDimmerAccessory = require ('./accessories/RademacherDimmerAccessory.js');
+var RademacherSwitchAccessory = require ('./accessories/RademacherSwitchAccessory.js');
+var RademacherSmokeAlarmAccessory = require ('./accessories/RademacherSmokeAlarmAccessory.js');
+var RademacherEnvironmentSensorAccessory = require ('./accessories/RademacherEnvironmentSensorAccessory.js');
+var RademacherSunSensorAccessory = require ('./accessories/RademacherSunSensorAccessory.js');
+var RademacherTemperatureSensorAccessory = require ('./accessories/RademacherTemperatureSensorAccessory.js');
+var RademacherDoorSensorAccessory = require ('./accessories/RademacherDoorSensorAccessory.js');
+var RademacherThermostatAccessory = require('./accessories/RademacherThermostatAccessory.js');
+var RademacherSceneAccessory = require ('./accessories/RademacherSceneAccessory.js');
+
+module.exports = function(homebridge) {
+    global.Accessory = homebridge.platformAccessory;
+    global.Service = homebridge.hap.Service;
+    global.Characteristic = homebridge.hap.Characteristic;
     UUIDGen = homebridge.hap.uuid;
 
-    homebridge.registerPlatform("homebridge-rademacher-blinds", "RademacherBlinds", RademacherBlinds, true);
+    homebridge.registerPlatform("homebridge-rademacher-homepilot", "RademacherHomePilot", RademacherHomePilot, true);
 };
 
-function RademacherBlinds(log, config, api) {
+// exclude/include dids
+function did_filter(log, config,data)
+{
+    this.debug = (config["debug"] == "true"); 
+    id=data.did?data.did:data.sid;
+    if (this.debug && config["did_list_usage"] && config["did_list"]) 
+    {
+        log("did_list_usage: "+config["did_list_usage"])
+        log("did_list: "+config["did_list"])
+        log("id: "+id)
+        log("includes: "+config["did_list"].includes(id))
+    }
+    if (config["did_list_usage"] && config["did_list_usage"]!="none" && config["did_list"]) 
+    {
+        if (config["did_list_usage"]=="include") 
+        {
+            if (config["did_list"].includes(id))
+            {
+                log("did filtering: including did "+id)
+                return data;
+            }
+            else
+            {
+                log("did filtering: excluding (not in include list) did "+id)
+            }   
+        }
+        else if (config["did_list_usage"]=="exclude") 
+        {
+            if (config["did_list"].includes(id))
+            {
+                log("did filtering: excluding did "+id)
+            }
+            else
+            {
+                log("did filtering: including (not in exclude list) did "+id)
+                return data;
+            }              
+        }
+    }
+    else
+    {
+        if (this.debug) log("not filtering: "+id)
+        return data;     
+    }
+}
+
+function RademacherHomePilot(log, config, api) {
     // global vars
     this.log = log;
-
-    let self = this;
+    this.debug = (config["debug"] == "true"); 
+    if (this.debug) log("Debugging...")
+    var self = this;
 
     // configuration vars
-    this.url = config["url"];
     this.accessories = [];
-    this.inverted = config["inverted"];
+    this.inverted = true;
+
+    process.env.UV_THREADPOOL_SIZE = 128;
+    
+    // HomePilot session
+    this.session = new RademacherHomePilotSession(this.log, this.debug, config["url"], config["password"], config["password_hashed"]);
 
     if (api) {
         this.api = api;
 
-        this.api.on('didFinishLaunching', function () {
-            let url = `${this.url}/v4/devices?devtype=Actuator`;
-            axios.get(url)
-                .then((response) => {
-                    let body = response.data;
-                    if (!body.devices) {
-                        return new Error("No devices returned from Homepilot");
-                    }
-
-                    body.devices.forEach((data) => {
-                        if (["27601565", "35000864", "14234511", "35000662", "36500172", "36500572_A", "16234511_A", "16234511_S", "45059071", "31500162", "23602075"].includes(data.deviceNumber)) {
-                            let uuid = UUIDGen.generate(`${data.did}`);
-                            let accessory = self.accessories[uuid];
-
+        this.api.on('didFinishLaunching', function() {
+            var handleActuators = function(e, body) {
+                if(e) {
+                  self.log("Request failed: "+e);
+                  return;
+                }
+                if (body.devices)
+                {
+                    body.devices.filter(data => did_filter(self.log,config,data)).forEach(function(data) {
+                        var uuid = UUIDGen.generate("did"+data.did);
+                        var accessory = self.accessories[uuid];
+                       
+                        // blinds
+                        if(["27601565","35000864","14234511","35000662","36500172","36500572_A","16234511_A","16234511_S","45059071","31500162","23602075","32000064","32000064_A","14236011"].includes(data.deviceNumber))
+                        {
                             if (accessory === undefined) {
-                                self.addAccessory(data);
-                            } else {
-                                self.log("Online: %s [%s]", accessory.displayName, data.did);
-                                self.accessories[uuid] = new RademacherBlindsAccessory(self.log, (accessory instanceof RademacherBlindsAccessory ? accessory.accessory : accessory), data, self.url, self.inverted);
+                                self.addBlindsAccessory(data);
+                            }
+                            else {
+                                self.log("blinds are online: %s [%s]", accessory.displayName, data.did);
+                                self.accessories[uuid] = new RademacherBlindsAccessory(self.log, self.debug, (accessory instanceof RademacherBlindsAccessory ? accessory.accessory : accessory), data, self.session, self.inverted);
+                            }
+                        }
+                        // dimmer
+                        else if(["35140462","35000462","35001262"].includes(data.deviceNumber))
+                        {
+                            if (accessory === undefined) {
+                                self.addDimmerAccessory(data);
+                            }
+                            else {
+                                self.log("dimmer is online: %s [%s]", accessory.displayName, data.did);
+                                self.accessories[uuid] = new RademacherDimmerAccessory(self.log, self.debug, (accessory instanceof RademacherDimmerAccessory ? accessory.accessory : accessory), data, self.session, self.inverted);
+                            }
+                        }
+                        // thermostat
+                        else if(["35003064","32501812_A","35002319"].includes(data.deviceNumber))
+                        {
+                            if (accessory === undefined) {
+                                self.addThermostatAccessory(data);
+                            }
+                            else {
+                                self.log("thermostat is online: %s [%s]", accessory.displayName, data.did);
+                                self.accessories[uuid] = new RademacherThermostatAccessory(self.log, self.debug, (accessory instanceof RademacherThermostatAccessory ? accessory.accessory : accessory), data, self.session, self.inverted);
+                            }
+                        }
+                        // lock/switch
+                        else if(["35000262","35001164","32501972","32501972_A"].includes(data.deviceNumber))
+                        {
+                            // icon = "Schließkontakt" ? => lock
+                            if (data.iconSet.k.includes("iconset27")){
+                                if (accessory === undefined) {
+                                    self.addLockAccessory(data);
+                                }
+                                else
+                                { 
+                                    self.log("lock is online: %s [%s]", accessory.displayName, data.did);
+                                    self.accessories[uuid] = new RademacherLockAccessory(self.log, self.debug, (accessory instanceof RademacherLockAccessory ? accessory.accessory : accessory), data, self.session);
+                                }
+                            }
+                            else {
+                                if (accessory === undefined) {
+                                    self.addSwitchAccessory(data);
+                                }
+                                else
+                                {
+                                    self.log("switch is online: %s [%s]", accessory.displayName, data.did);
+                                    self.accessories[uuid] = new RademacherSwitchAccessory(self.log, self.debug, (accessory instanceof RademacherSwitchAccessory ? accessory.accessory : accessory), data, self.session);
+                                }
+                            }
+                        }
+                        // enviroment sensor
+                        else if(["32000064","32000064_A","32000064_S","32004464"].includes(data.deviceNumber))
+                        {
+                            self.addEnvironmentSensorAccessory(accessory, data);
+                        }
+                        // sun sensor
+                        else if(["32000069","16234511_S"].includes(data.deviceNumber))
+                        {
+                            self.addSunSensorAccessory(accessory, data);
+                        }
+                        // unknown
+                        else
+                        {
+                            self.log("Unknown product: %s", data.deviceNumber);
+                            if (self.debug) self.log(data);
+                        }
+                    });
+                }
+                else
+                {
+                    self.log("No devices found in %s",body);
+                }
+            };
+            var handleSensors = function(e, body) {
+                if(e) {
+                    self.log("Request failed: "+e);
+                    return;
+                }
+                if (body.meters)
+                {
+                    body.meters.filter(data => did_filter(self.log,config,data)).forEach(function(data) {
+                        var uuid = UUIDGen.generate("did"+data.did);
+                        var accessory = self.accessories[uuid];
+                        
+                        // smoke alarm
+                        if(["32001664"].includes(data.deviceNumber))
+                        {
+                            if (accessory === undefined) {
+                                self.addSmokeAlarmAccessory(data);
+                            }
+                            else {
+                                self.log("smoke alarm is online: %s [%s]", accessory.displayName, data.did);
+                                self.accessories[uuid] = new RademacherSmokeAlarmAccessory(self.log, self.debug, (accessory instanceof RademacherSmokeAlarmAccessory ? accessory.accessory : accessory), data, self.session);
+                            }
+                        }
+                        // environment sensor
+                        else if(["32000064_S"].includes(data.deviceNumber))
+                        {
+                            self.addEnvironmentSensorAccessory(accessory, data);
+                        }
+                        // sun sensor
+                        else if(["32000069","16234511_S"].includes(data.deviceNumber))
+                        {
+                            self.addSunSensorAccessory(accessory, data);
+                        }
+                        // temperature sensor
+                        else if(["32501812_S"].includes(data.deviceNumber))
+                        {
+                            if (accessory === undefined) {
+                                self.addTemperatureSensorAccessory(data);
+                            }
+                            else {
+                                self.log("temperature sensor is online: %s [%s]", accessory.displayName, data.did);
+                                self.accessories[uuid] = new RademacherTemperatureSensorAccessory(self.log, self.debug, (accessory instanceof RademacherTemperatureSensorAccessory ? accessory.accessory : accessory), data, self.session);
+                            }
+                        }
+                        // door/window sensor
+                        else if(["32003164","32002119"].includes(data.deviceNumber))
+                        {
+                            if (accessory === undefined) {
+                                self.addDoorSensorAccessory(data);
+                            }
+                            else {
+                                self.log("door sensor is online: %s [%s]", accessory.displayName, data.did);
+                                self.accessories[uuid] = new RademacherDoorSensorAccessory(self.log, self.debug, (accessory instanceof RademacherDoorSensorAccessory ? accessory.accessory : accessory), data, self.session);
+                            }
+                        }                    
+                        // unknown
+                        else
+                        {
+                            self.log("Unknown product: %s",data.deviceNumber);
+                            self.log(data);
+                        }
+                    });
+                }
+                else
+                {
+                    self.log("No meters found in %s",body);
+                }
+            };
+            var handleScenes = function(e, body) {
+                if(e) {
+                    self.log("Request failed: "+e);
+                    return;
+                }
+                if (body.scenes)
+                {
+                    body.scenes.filter(data => did_filter(self.log,config,data)).forEach(function(data) {
+                        if (data.isExecutable==1)
+                        {
+                            var uuid = UUIDGen.generate("sid"+data.sid);
+                            var accessory = self.accessories[uuid];
+                            
+                            if (accessory === undefined) {
+                                self.addSceneAccessory(data);
+                            }
+                            else {
+                                self.log("scene is online: %s [%s]", accessory.displayName, data.sid);
+                                self.accessories[uuid] = new RademacherSceneAccessory(self.log, self.debug, (accessory instanceof RademacherSceneAccessory ? accessory.accessory : accessory), data, self.session);
                             }
                         }
                     });
-                })
-                .catch((error) => {
-                    self.log('error' + error);
-                    return new Error("Request failed: " + error);
-                });
+                }
+                else
+                {
+                    self.log("No meters found in %s", body);
+                }
+            };
+            self.session.login(function(e) {
+                if(e) {
+                    self.log("Login failed: "+e);
+                    return;
+                }
+                self.session.get("/v4/devices?devtype=Actuator", 30000, handleActuators);
+                self.session.get("/v4/devices?devtype=Sensor", 30000, handleSensors);
+                if (config["scenes_as_switch"] && config["scenes_as_switch"]=="true")
+                {
+                    self.session.get("/v4/scenes", 30000, handleScenes);
+                }
+            });
         }.bind(this));
     }
 }
 
-RademacherBlinds.prototype.configureAccessory = function (accessory) {
+RademacherHomePilot.prototype.configureAccessory = function(accessory) {
     this.accessories[accessory.UUID] = accessory;
 };
 
-RademacherBlinds.prototype.addAccessory = function (blind) {
-    this.log("Found: %s - %s [%s]", blind.name, blind.description, blind.did);
+RademacherHomePilot.prototype.addBlindsAccessory = function(blind) {
+    this.log("Found blinds: %s - %s [%s]", blind.name, blind.description, blind.did);
 
-    let name;
-    if (!blind.description.trim()) {
+    var name = null;
+    if(!blind.description.trim())
         name = blind.name;
-    } else {
+    else
         name = blind.description;
-    }
-
-    let accessory = new Accessory(name, UUIDGen.generate(`${blind.did}`));
-    accessory.addService(Service.WindowCovering, name);
-
-    this.accessories[accessory.UUID] = new RademacherBlindsAccessory(this.log, accessory, blind, this.url, this.inverted);
-
-    this.api.registerPlatformAccessories("homebridge-rademacher-blinds", "RademacherBlinds", [accessory]);
+    var accessory = new global.Accessory(name, UUIDGen.generate("did"+blind.did));
+    accessory.addService(global.Service.WindowCovering, name);
+    this.accessories[accessory.UUID] = new RademacherBlindsAccessory(this.log, this.debug, accessory, blind, this.session, this.inverted);
+    this.api.registerPlatformAccessories("homebridge-rademacher-homepilot", "RademacherHomePilot", [accessory]);
+    this.log("Added blinds: %s - %s [%s]", blind.name, blind.description, blind.did);
 };
 
-RademacherBlinds.prototype.removeAccessory = function (accessory) {
+RademacherHomePilot.prototype.addSmokeAlarmAccessory = function(sensor) {
+    this.log("Found smoke alarm: %s - %s [%s]", sensor.name, sensor.description, sensor.did);
+
+    var name = null;
+    if(!sensor.description.trim())
+        name = sensor.name;
+    else
+        name = sensor.description;
+    var accessory = new global.Accessory(name, UUIDGen.generate("did"+sensor.did));
+    accessory.addService(global.Service.SmokeSensor, name);
+    accessory.addService(global.Service.BatteryService, name);
+    this.accessories[accessory.UUID] = new RademacherSmokeAlarmAccessory(this.log, this.debug, accessory, sensor, this.session);
+    this.api.registerPlatformAccessories("homebridge-rademacher-homepilot", "RademacherHomePilot", [accessory]);
+    this.log("Added smoke alarm: %s - %s [%s]", sensor.name, sensor.description, sensor.did);
+};
+
+RademacherHomePilot.prototype.addEnvironmentSensorAccessory = function(accessoryIn, sensor) {
+    this.log("Found environment sensor: %s - %s [%s]", sensor.name, sensor.description, sensor.did);
+
+    var name = null;
+    if(!sensor.description.trim())
+        name = sensor.name;
+    else
+        name = sensor.description;
+
+    var accessory = null
+    if (accessoryIn === undefined)
+    {
+        this.log("Found environment sensor: new accessory")
+        accessory = new global.Accessory(name, UUIDGen.generate("did"+sensor.did));
+        accessory.addService(global.Service.TemperatureSensor, name);
+        accessory.addService(global.Service.LightSensor, name);
+        // As of now implementation of Rain Sensor as Leak Sensor
+        accessory.addService(global.Service.LeakSensor, name);
+        this.api.registerPlatformAccessories("homebridge-rademacher-homepilot", "RademacherHomePilot", [accessory]);
+    }
+    else if (accessoryIn instanceof RademacherEnvironmentSensorAccessory)
+    {
+        accessory = accessoryIn.accessory;
+    }
+    else
+    {
+        accessory = accessoryIn
+    }
+    if (!(this.accessories[accessory.UUID] instanceof RademacherEnvironmentSensorAccessory))
+    {
+        this.accessories[accessory.UUID] = new RademacherEnvironmentSensorAccessory(this.log, this.debug, accessory, sensor, this.session, this.inverted);
+    }
+    this.log("Added environment sensor: %s - %s [%s]", sensor.name, sensor.description, sensor.did);
+};
+
+RademacherHomePilot.prototype.addSunSensorAccessory = function(accessoryIn, sensor) 
+{
+    this.log("Found sun sensor: %s - %s [%s]", sensor.name, sensor.description, sensor.did);
+
+    var name = null;
+    if (!sensor.description.trim()) {
+        name = sensor.name;
+    }
+    else {
+        name = sensor.description;
+    }
+
+    var accessory = null;
+
+    if (accessoryIn === undefined) {
+        this.log("Found sun sensor: new accessory with LightSensor and Switch characteristics");
+        accessory = new global.Accessory(name, UUIDGen.generate("did" + sensor.did));
+        accessory.addService(global.Service.LightSensor, name);
+        accessory.addService(global.Service.Switch, name);
+        this.api.registerPlatformAccessories("homebridge-rademacher-homepilot", "RademacherHomePilot", [accessory]);
+    }
+    else if (accessoryIn instanceof RademacherSunSensorAccessory) {
+        accessory = accessoryIn.accessory;
+    }
+    else {
+        accessory = accessoryIn;
+    }
+
+    if (!(this.accessories[accessory.UUID] instanceof RademacherSunSensorAccessory)) {
+        this.accessories[accessory.UUID] = new RademacherSunSensorAccessory(this.log, this.debug, accessory, sensor, this.session, this.inverted);
+    }
+    
+    this.log("Added sun sensor: %s - %s [%s]", sensor.name, sensor.description, sensor.did);
+};
+
+RademacherHomePilot.prototype.addTemperatureSensorAccessory = function(sensor) {
+    this.log("Found temperature sensor: %s - %s [%s]", sensor.name, sensor.description, sensor.did);
+
+    var name = null;
+    if(!sensor.description.trim())
+        name = sensor.name;
+    else
+        name = sensor.description;
+    var accessory = new global.Accessory(name, UUIDGen.generate("did"+sensor.did));
+    accessory.addService(global.Service.TemperatureSensor, name);
+    this.accessories[accessory.UUID] = new RademacherTemperatureSensorAccessory(this.log, this.debug, accessory, sensor, this.session);
+    this.api.registerPlatformAccessories("homebridge-rademacher-homepilot", "RademacherHomePilot", [accessory]);
+    this.log("Added temperature sensor: %s - %s [%s]", sensor.name, sensor.description, sensor.did);
+};
+
+RademacherHomePilot.prototype.addDoorSensorAccessory = function(sensor) {
+    this.log("Found door sensor: %s - %s [%s]", sensor.name, sensor.description, sensor.did);
+
+    var name = null;
+    if(!sensor.description.trim())
+        name = sensor.name;
+    else
+        name = sensor.description;
+    var accessory = new global.Accessory(name, UUIDGen.generate("did"+sensor.did));
+    accessory.addService(global.Service.ContactSensor, name);
+    accessory.addService(global.Service.BatteryService, name);
+    this.accessories[accessory.UUID] = new RademacherDoorSensorAccessory(this.log, this.debug, accessory, sensor, this.session);
+    this.api.registerPlatformAccessories("homebridge-rademacher-homepilot", "RademacherHomePilot", [accessory]);
+    this.log("Added door sensor: %s - %s [%s]", sensor.name, sensor.description, sensor.did);
+};
+
+RademacherHomePilot.prototype.addDimmerAccessory = function(dimmer) {
+    this.log("Found dimmer: %s - %s [%s]", dimmer.name, dimmer.description, dimmer.did);
+
+    var name = null;
+    if(!dimmer.description.trim())
+        name = dimmer.name;
+    else
+        name = dimmer.description;
+    var accessory = new global.Accessory(name, UUIDGen.generate("did"+dimmer.did));
+    accessory.addService(global.Service.Lightbulb, name);
+    this.accessories[accessory.UUID] = new RademacherDimmerAccessory(this.log, this.debug, accessory, dimmer, this.session);
+    this.api.registerPlatformAccessories("homebridge-rademacher-homepilot", "RademacherHomePilot", [accessory]);
+    this.log("Added dimmer: %s - %s [%s]", dimmer.name, dimmer.description, dimmer.did);
+};
+
+RademacherHomePilot.prototype.addThermostatAccessory = function(thermostat) {
+    this.log("Found thermostat: %s - %s [%s]", thermostat.name, thermostat.description, thermostat.did);
+
+    var name = null;
+    if(!thermostat.description.trim())
+        name = thermostat.name;
+    else
+        name = thermostat.description;
+    var accessory = new global.Accessory(name, UUIDGen.generate("did"+thermostat.did));
+    accessory.addService(global.Service.Thermostat, name);
+    this.accessories[accessory.UUID] = new RademacherThermostatAccessory(this.log, this.debug, accessory, thermostat, this.session);
+    this.api.registerPlatformAccessories("homebridge-rademacher-homepilot", "RademacherHomePilot", [accessory]);
+    this.log("Added thermostat: %s - %s [%s]", thermostat.name, thermostat.description, thermostat.did);
+};
+
+RademacherHomePilot.prototype.addSwitchAccessory = function(sw) {
+    this.log("Found switch: %s - %s [%s]", sw.name, sw.description, sw.did);
+
+    var name = null;
+    if(!sw.description.trim())
+        name = sw.name;
+    else
+        name = sw.description;
+    var accessory = new global.Accessory(name, UUIDGen.generate("did"+sw.did));
+    accessory.addService(global.Service.Switch, name);
+    this.accessories[accessory.UUID] = new RademacherSwitchAccessory(this.log, this.debug, accessory, sw, this.session);
+    this.api.registerPlatformAccessories("homebridge-rademacher-homepilot", "RademacherHomePilot", [accessory]);
+    this.log("Added switch: %s - %s [%s]", sw.name, sw.description, sw.did);
+};
+
+RademacherHomePilot.prototype.addSceneAccessory = function(scene) {
+    this.log("Found scene: %s - %s [%s]", scene.name, scene.description, scene.sid);
+
+    var name = null;
+    if(!scene.description.trim())
+        name = scene.name;
+    else
+        name = scene.description;
+    var accessory = new global.Accessory(name, UUIDGen.generate("sid"+scene.sid));
+    accessory.addService(global.Service.Switch, name);
+    this.accessories[accessory.UUID] = new RademacherSceneAccessory(this.log, this.debug, accessory, scene, this.session);
+    this.api.registerPlatformAccessories("homebridge-rademacher-homepilot", "RademacherHomePilot", [accessory]);
+    this.log("Added scene: %s - %s [%s]", scene.name, scene.description, scene.sid);
+};
+
+RademacherHomePilot.prototype.addLockAccessory = function(sw) {
+    this.log("Found lock: %s - %s [%s]", sw.name, sw.description, sw.did);
+
+    var name = null;
+    if(!sw.description.trim())
+        name = sw.name;
+    else
+        name = sw.description;
+    var accessory = new global.Accessory(name, UUIDGen.generate("did"+sw.did));
+    accessory.addService(global.Service.LockMechanism, name);
+    this.accessories[accessory.UUID] = new RademacherLockAccessory(this.log, this.debug, accessory, sw, this.session);
+    this.api.registerPlatformAccessories("homebridge-rademacher-homepilot", "RademacherHomePilot", [accessory]);
+    this.log("Added lock: %s - %s [%s]", sw.name, sw.description, sw.did);
+};
+
+RademacherHomePilot.prototype.removeAccessory = function(accessory) {
     if (accessory) {
         this.log("[" + accessory.description + "] Removed from HomeBridge.");
         if (this.accessories[accessory.UUID]) {
             delete this.accessories[accessory.UUID];
         }
-        this.api.unregisterPlatformAccessories("homebridge-rademacher-blinds", "RademacherBlinds", [accessory]);
+        this.api.unregisterPlatformAccessories("homebridge-rademacher-homepilot", "RademacherHomePilot", [accessory]);
     }
 };
-
-// accessory
-
-function RademacherBlindsAccessory(log, accessory, blind, url, inverted) {
-    let self = this;
-
-    let info = accessory.getService(Service.AccessoryInformation);
-
-    accessory.context.manufacturer = "Rademacher";
-    info.setCharacteristic(Characteristic.Manufacturer, accessory.context.manufacturer.toString());
-
-    accessory.context.model = blind.deviceNumber;
-    info.setCharacteristic(Characteristic.Model, accessory.context.model.toString());
-
-    accessory.context.serial = blind.did;
-    info.setCharacteristic(Characteristic.SerialNumber, accessory.context.serial.toString());
-
-    this.inverted = inverted;
-    this.accessory = accessory;
-    this.blind = blind;
-    this.log = log;
-    this.url = url;
-
-    let position = this.blind.statusesMap.position ? this.blind.statusesMap.position : 0;
-    this.lastPosition = this.inverted ? reversePercentage(position) : position;
-    this.currentPositionState = Characteristic.PositionState.STOPPED;
-    this.currentTargetPosition = this.lastPosition;
-
-    this.service = accessory.getService(Service.WindowCovering);
-
-    this.service
-        .getCharacteristic(Characteristic.CurrentPosition)
-        .setValue(self.inverted ? reversePercentage(self.blind.position) : self.blind.position)
-        .on('get', this.getCurrentPosition.bind(this));
-
-    this.service
-        .getCharacteristic(Characteristic.TargetPosition)
-        .setValue(self.inverted ? reversePercentage(self.blind.position) : self.blind.position)
-        .on('get', this.getTargetPosition.bind(this))
-        .on('set', this.setTargetPosition.bind(this));
-
-    this.service.getCharacteristic(Characteristic.PositionState)
-        .setValue(this.currentPositionState)
-        .on('get', this.getPositionState.bind(this));
-
-    this.service.getCharacteristic(Characteristic.ObstructionDetected)
-        .setValue(this.blind.hasErrors)
-        .on('get', this.getObstructionDetected.bind(this));
-
-    accessory.updateReachability(true);
-}
-
-RademacherBlindsAccessory.prototype.setTargetPosition = function (value, callback) {
-    this.log("%s - Setting target position: %s", this.accessory.displayName, value);
-
-    let self = this;
-    this.currentTargetPosition = value;
-    let moveUp = (this.currentTargetPosition >= this.lastPosition);
-    this.service.setCharacteristic(Characteristic.PositionState,
-        (moveUp ? Characteristic.PositionState.INCREASING : Characteristic.PositionState.DECREASING)
-    );
-    let target = self.inverted ? reversePercentage(value) : value;
-
-    let data = {
-        name: 'GOTO_POS_CMD',
-        value: target
-    };
-
-    let url = `${this.url}/devices/${this.blind.did}`;
-    axios.put(url, data, {
-        headers: {'Content-Type': 'application/json'}
-    })
-        .then(() => {
-            self.service.setCharacteristic(Characteristic.CurrentPosition, self.currentTargetPosition);
-            self.service.setCharacteristic(Characteristic.PositionState, Characteristic.PositionState.STOPPED);
-            self.lastPosition = self.currentTargetPosition;
-            callback(null, self.currentTargetPosition);
-        })
-        .catch((error) => {
-            return callback(new Error("Request failed: " + error), false);
-        });
-};
-
-RademacherBlindsAccessory.prototype.getTargetPosition = function (callback) {
-    this.log("%s - Getting target position", this.accessory.displayName);
-
-    let self = this;
-
-    let url = `${this.url}/v4/devices/${this.blind.did}`;
-    axios.get(url)
-        .then((request) => {
-            let body = request.data;
-            let position = body.device.statusesMap ? body.device.statusesMap.Position : null;
-
-            if (position === null) {
-                return callback(new Error("Failed parsing position in device output"), false);
-            }
-
-            let positionNormalized = self.inverted ? reversePercentage(position) : position;
-            self.currentTargetPosition = positionNormalized;
-            callback(null, positionNormalized);
-        })
-        .catch((error) => {
-            return callback(new Error("Request failed: " + error), false);
-        });
-};
-
-RademacherBlindsAccessory.prototype.getCurrentPosition = function (callback) {
-    this.log("%s - Getting current position", this.accessory.displayName);
-
-    let self = this;
-
-    let url = `${this.url}/v4/devices/${this.blind.did}`;
-    axios.get(url)
-        .then((request) => {
-            let body = request.data;
-            let position = body.device.statusesMap ? body.device.statusesMap.Position : null;
-
-            if (position === null) {
-                return callback(new Error("Failed parsing position in device output"), false);
-            }
-
-            let positionNormalized = self.inverted ? reversePercentage(position) : position;
-            self.currentTargetPosition = positionNormalized;
-            self.lastPosition = positionNormalized;
-            callback(null, positionNormalized);
-        })
-        .catch((error) => {
-            return callback(new Error("Request failed: " + error), false);
-        });
-};
-
-RademacherBlindsAccessory.prototype.getPositionState = function (callback) {
-    callback(null, this.currentPositionState);
-};
-
-RademacherBlindsAccessory.prototype.getObstructionDetected = function (callback) {
-    this.log("%s - Checking for ObstructionDetected", this.accessory.displayName);
-
-    let url = `${this.url}/v4/devices/${this.blind.did}`;
-    axios.get(url)
-        .then((request) => {
-            let body = request.data;
-
-            let hasErrors = body.device.hasErrors !== 0;
-
-            callback(null, hasErrors);
-        })
-        .catch((error) => {
-            return callback(new Error("Request failed: " + error), false);
-        });
-};
-
-function reversePercentage(p) {
-    let min = 0;
-    let max = 100;
-    return (min + max) - p;
-}
